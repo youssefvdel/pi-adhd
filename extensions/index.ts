@@ -26,6 +26,8 @@ import { SessionExporter } from "./session-export";
 import { TTLManager } from "./ttl-pruning";
 import { SubagentManager } from "./subagent-manager";
 import { parseNodeTags, stripNodeTags, hasNodeTags } from "./node-tag-parser";
+import { Text } from "@earendil-works/pi-tui";
+import { formatNodeStatus, formatNodeList, getNodeColor } from "./tui-nodes";
 
 let graph: NodeGraph = createNodeGraph();
 let shelf: ShelfStorage = new ShelfStorage(graph);
@@ -106,6 +108,9 @@ export default function adhdExtension(pi: ExtensionAPI) {
       });
     }
 
+    // Update TUI status with node info
+    ctx.ui.setStatus("nodes", formatNodeStatus(graph));
+
     const activeNodes = getActiveNodes(graph);
     const sleepingNodes = getSleepingNodes(graph);
 
@@ -119,7 +124,8 @@ export default function adhdExtension(pi: ExtensionAPI) {
     if (activeNodes.length > 0) {
       contextInjection += `\nActive node details:\n`;
       for (const node of activeNodes) {
-        contextInjection += `- ${node.id}: ${node.label} (${node.summary.status})\n`;
+        const _color = getNodeColor(node.id, graph);
+        contextInjection += `- [${node.id}] ${node.label} (${node.summary.status})\n`;
         contextInjection += `  Goal: ${node.summary.goal}\n`;
         contextInjection += `  Key files: ${node.summary.keyFiles.join(", ")}\n`;
       }
@@ -234,6 +240,13 @@ function registerTools(pi: ExtensionAPI) {
       keyFiles: Type.Array(Type.String(), { description: "Files this node will touch" }),
       tags: Type.Optional(Type.Array(Type.String(), { description: "Keywords for auto-wake" })),
     }),
+    renderCall(args, theme, context) {
+      const color = getNodeColor(args.id, graph);
+      return new Text(theme.fg(color, `Creating node: ${args.id}`), 0, 0);
+    },
+    renderResult(result, options, theme, context) {
+      return new Text(theme.fg("success", result.content[0].text), 0, 0);
+    },
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const node = createNode(graph, params.id, params.label, {
         goal: params.goal,
@@ -653,6 +666,24 @@ function registerTools(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: `Active file locks:\n${message}` }],
         details: { locks },
+      };
+    },
+  });
+
+  // Show node widget in footer
+  pi.registerTool({
+    name: "adhd_show_nodes",
+    label: "Show Nodes Widget",
+    description: "Display a detailed node widget in the TUI",
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const nodeDisplay = formatNodeList(graph);
+
+      ctx.ui.setFooter(nodeDisplay);
+
+      return {
+        content: [{ type: "text", text: "Node widget displayed in footer" }],
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
