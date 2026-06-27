@@ -6,8 +6,8 @@
   "license": "MIT",
   "pi": {
     "extensions": ["./extensions", "node_modules/pi-subagents/extensions"],
-    "skills": ["./skills", "node_modules/pi-subagents/skills"],
-    "prompts": ["./prompts", "node_modules/pi-subagents/prompts"]
+    "skills": ["node_modules/pi-subagents/skills"],
+    "prompts": ["node_modules/pi-subagents/prompts"]
   },
   "dependencies": {
     "pi-subagents": "^0.31.0"
