@@ -22,6 +22,7 @@ import { StalenessTracker } from "./staleness";
 import { SessionExporter } from "./session-export";
 import { TTLManager } from "./ttl-pruning";
 import { SubagentManager } from "./subagent-manager";
+import { parseNodeTags, stripNodeTags, hasNodeTags } from "./node-tag-parser";
 
 let graph: NodeGraph = createNodeGraph();
 let shelf: ShelfStorage = new ShelfStorage(graph);
@@ -139,6 +140,50 @@ export default function adhdExtension(pi: ExtensionAPI) {
         }
       }
     }
+  });
+
+  // Process <node> tags in agent output
+  pi.on("tool_result", async (event, ctx) => {
+    // Only process assistant messages (not tool results)
+    if (event.role !== "assistant") return;
+
+    const content = typeof event.content === "string" ? event.content : "";
+    if (!hasNodeTags(content)) return;
+
+    const parsedNodes = parseNodeTags(content);
+
+    for (const parsed of parsedNodes) {
+      // Check if node already exists
+      if (graph.nodes.has(parsed.id)) {
+        // Node exists, just update lastActive
+        const existing = graph.nodes.get(parsed.id)!;
+        existing.lastActive = Date.now();
+        continue;
+      }
+
+      // Create new node
+      const node = createNode(graph, parsed.id, parsed.label, {
+        goal: parsed.goal,
+        status: "active",
+        keyFiles: parsed.files,
+        lastAction: "created via <node> tag",
+      }, parsed.tags);
+
+      shelf.updateKeywordIndex(node);
+
+      // Track files
+      for (const file of parsed.files) {
+        staleness.trackFileWrite(node, file);
+      }
+    }
+
+    // Strip tags from content before passing to LLM
+    const cleanContent = stripNodeTags(content);
+
+    return {
+      content: cleanContent,
+      details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
+    };
   });
 
   // Register ADHD tools

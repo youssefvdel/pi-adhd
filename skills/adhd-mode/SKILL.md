@@ -59,3 +59,50 @@ These files changed while the node was sleeping. Consider creating a fresh node.
 ```
 
 This prevents working from outdated context.
+
+## Node Tags (Preferred)
+
+Instead of calling `adhd_create_node`, use `<node>` tags directly in your output. This is faster and allows multiple nodes in one message.
+
+### Format
+
+```
+<node id="unique_id" label="Short Label" goal="What this node does" files="file1.ts,file2.ts" tags="keyword1,keyword2">
+```
+
+### Examples
+
+**Single node:**
+```
+<node id="auth" label="JWT Auth" goal="Implement JWT authentication" files="src/auth.ts,src/middleware.ts" tags="jwt,auth,token">
+
+Now let me implement the JWT authentication...
+```
+
+**Multiple nodes:**
+```
+<node id="auth" label="JWT Auth" goal="Implement JWT authentication" files="src/auth.ts" tags="jwt,auth">
+
+Working on authentication first...
+
+<node id="rate_limit" label="Rate Limiter" goal="Add rate limiting" files="src/middleware.ts" tags="rate,limit">
+
+Then I'll add rate limiting...
+```
+
+### Rules
+
+1. `id` is required, must be unique
+2. `label` is optional (defaults to id)
+3. `goal` is required
+4. `files` is comma-separated list of files this node will touch
+5. `tags` is optional, comma-separated keywords for auto-wake
+6. No closing tag needed - next `<node>` or end of message = boundary
+7. Tags are automatically stripped from content before it reaches the LLM
+
+### When to Use
+
+- Starting work on a new feature/task
+- Switching context to a different area
+- Capturing a new idea or line of work
+- Multiple related tasks in one message
