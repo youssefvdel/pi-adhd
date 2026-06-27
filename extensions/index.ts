@@ -168,6 +168,71 @@ export default function adhdExtension(pi: ExtensionAPI) {
     };
   });
 
+  // Intercept messages before they reach the LLM
+  // Parse <node> tags, strip from user-visible output, preserve in AI context
+  pi.on("context", async (event, ctx) => {
+    const messages = event.messages;
+    const processedMessages = [];
+
+    for (const message of messages) {
+      // Only process assistant messages with <node> tags
+      if (message.role === "assistant" && typeof message.content === "string" && hasNodeTags(message.content)) {
+        // Parse <node> tags
+        const parsedNodes = parseNodeTags(message.content);
+
+        // Process each parsed node
+        for (const parsed of parsedNodes) {
+          // Check if node already exists
+          if (graph.nodes.has(parsed.id)) {
+            // Node exists, just update lastActive and current thought
+            const existing = graph.nodes.get(parsed.id)!;
+            existing.lastActive = Date.now();
+            currentThoughtId = parsed.id;
+            continue;
+          }
+
+          // Create new thought as child of current thought
+          const newThought = addChildThought(graph, currentThoughtId || "root", parsed.id, parsed.label);
+          newThought.type = "direction-switch";
+          currentThoughtId = parsed.id;
+
+          shelf.updateKeywordIndex(newThought);
+
+          // Track files
+          for (const file of parsed.files) {
+            staleness.trackFileWrite(newThought, file);
+          }
+        }
+
+        // Strip tags from content for user-visible output
+        const cleanContent = stripNodeTags(message.content);
+
+        // Create a new message with stripped content
+        processedMessages.push({
+          ...message,
+          content: cleanContent,
+        });
+      } else {
+        // For non-assistant messages or messages without tags, pass through
+        processedMessages.push(message);
+      }
+    }
+
+    // Add thought tree context to the messages
+    const thoughtContext = `\n\n[Thought Tree]\n${formatThoughtTree(graph, null, 0)}\nCurrent thought: [${currentThoughtId ? graph.nodes.get(currentThoughtId)?.label || currentThoughtId : "none"}]`;
+
+    // Add thought context as a system message
+    processedMessages.push({
+      role: "system",
+      content: thoughtContext,
+      timestamp: Date.now(),
+    });
+
+    return {
+      messages: processedMessages,
+    };
+  });
+
   // Track file operations for staleness
   pi.on("tool_call", async (event, ctx) => {
     const toolName = event.toolName;
@@ -203,80 +268,6 @@ export default function adhdExtension(pi: ExtensionAPI) {
         }
       }
     }
-  });
-
-  // Process <node> tags in agent output
-  pi.on("tool_result", async (event, ctx) => {
-    // Only process assistant messages (not tool results)
-    if (event.role !== "assistant") return;
-
-    const content = typeof event.content === "string" ? event.content : "";
-    
-    // Parse any <node> tags
-    const parsedNodes = parseNodeTags(content);
-    
-    // If no tags found, auto-create a default node for this message
-    if (parsedNodes.length === 0) {
-      // Auto-create a node for this message if none exists
-      if (!currentThoughtId) {
-        const autoId = `auto_${Date.now()}`;
-        const autoThought = addChildThought(graph, "root", autoId, "Auto");
-        autoThought.type = "thought";
-        currentThoughtId = autoId;
-        shelf.updateKeywordIndex(autoThought);
-      }
-      
-      // Tag the content with current thought
-      const taggedContent = formatMessageWithThought(
-        content,
-        currentThoughtId,
-        graph.nodes.get(currentThoughtId)?.label || null,
-        graph
-      );
-      
-      return {
-        content: taggedContent,
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
-      };
-    }
-
-    // Process parsed nodes
-    for (const parsed of parsedNodes) {
-      // Check if node already exists
-      if (graph.nodes.has(parsed.id)) {
-        // Node exists, just update lastActive and current thought
-        const existing = graph.nodes.get(parsed.id)!;
-        existing.lastActive = Date.now();
-        currentThoughtId = parsed.id;
-        continue;
-      }
-
-      // Create new thought as child of current thought
-      const newThought = addChildThought(graph, currentThoughtId || "root", parsed.id, parsed.label);
-      newThought.type = "direction-switch";
-      currentThoughtId = parsed.id;
-
-      shelf.updateKeywordIndex(newThought);
-
-      // Track files
-      for (const file of parsed.files) {
-        staleness.trackFileWrite(newThought, file);
-      }
-    }
-
-    // Strip tags from content, tag with current thought
-    const cleanContent = stripNodeTags(content);
-    const taggedContent = formatMessageWithThought(
-      cleanContent,
-      currentThoughtId,
-      graph.nodes.get(currentThoughtId)?.label || null,
-      graph
-    );
-
-    return {
-      content: taggedContent,
-      details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
-    };
   });
 
   // Register ADHD tools
