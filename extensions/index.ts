@@ -19,10 +19,16 @@ import {
 } from "./node-graph";
 import { ShelfStorage } from "./shelf-storage";
 import { StalenessTracker } from "./staleness";
+import { SessionExporter } from "./session-export";
+import { TTLManager } from "./ttl-pruning";
+import { SubagentManager } from "./subagent-manager";
 
 let graph: NodeGraph = createNodeGraph();
 let shelf: ShelfStorage = new ShelfStorage(graph);
 let staleness: StalenessTracker = new StalenessTracker();
+let sessionExporter: SessionExporter = new SessionExporter();
+let ttlManager: TTLManager = new TTLManager();
+let subagentManager: SubagentManager = new SubagentManager();
 let turnCount: number = 0;
 
 export default function adhdExtension(pi: ExtensionAPI) {
@@ -36,13 +42,27 @@ export default function adhdExtension(pi: ExtensionAPI) {
         if (details?.nodeGraph) {
           graph = deserialize(details.nodeGraph);
           shelf = ShelfStorage.deserialize(graph, details.shelf || {});
+          if (details?.subagentManager) {
+            subagentManager = SubagentManager.deserialize(details.subagentManager);
+          }
           // Don't break - iterate all, last match wins
         }
       }
     }
   }
 
-  pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
+  pi.on("session_start", async (_event, ctx) => {
+    reconstructState(ctx);
+    // TTL pruning: decrement and kill expired nodes
+    const pruned = ttlManager.onSessionStart(graph);
+    if (pruned.length > 0) {
+      pi.sendMessage({
+        customType: "adhd-ttl",
+        content: `TTL pruning: ${pruned.length} nodes expired: ${pruned.join(", ")}`,
+        display: true,
+      });
+    }
+  });
   pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
 
   // Inject node graph state into system prompt
@@ -156,7 +176,7 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: `Created node: ${params.id} (${params.label})` }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize() },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
@@ -193,7 +213,7 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: message }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), staleness: stalenessResult },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize(), staleness: stalenessResult },
       };
     },
   });
@@ -225,7 +245,7 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: `Expanded node: ${node.id}` }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize() },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
@@ -250,7 +270,7 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: `Collapsed node: ${node.id}` }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize() },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
@@ -283,7 +303,7 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: `Hibernated node: ${node.id}. Now on shelf.` }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize() },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
@@ -311,7 +331,7 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: `Killed node: ${params.nodeId}${params.reason ? ` (${params.reason})` : ""}` }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize() },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
@@ -373,7 +393,178 @@ function registerTools(pi: ExtensionAPI) {
 
       return {
         content: [{ type: "text", text: message }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize() },
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
+      };
+    },
+  });
+
+  // Export current session
+  pi.registerTool({
+    name: "adhd_export_session",
+    label: "Export Session",
+    description: "Export current node graph to a session file for later import",
+    promptSnippet: "Use before closing a session to preserve nodes for future sessions",
+    parameters: Type.Object({
+      topic: Type.String({ description: "Topic/description of this session's work" }),
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const sessionId = `session_${Date.now()}`;
+      try {
+        const filePath = await sessionExporter.exportSession(graph, sessionId, params.topic);
+        return {
+          content: [{ type: "text", text: `Session exported to: ${filePath}` }],
+          details: { sessionId, filePath },
+        };
+      } catch (error: any) {
+        return {
+          content: [{ type: "text", text: `Export failed: ${error.message}` }],
+          details: { error: true },
+        };
+      }
+    },
+  });
+
+  // List past sessions for import
+  pi.registerTool({
+    name: "adhd_list_past_sessions",
+    label: "List Past Sessions",
+    description: "List available past sessions for import",
+    promptSnippet: "Use to see what sessions are available to import nodes from",
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      try {
+        const sessions = await sessionExporter.listPastSessions();
+        if (sessions.length === 0) {
+          return {
+            content: [{ type: "text", text: "No past sessions found" }],
+            details: { sessions: [] },
+          };
+        }
+
+        const message = sessions
+          .map((s) => `- ${s.session_id}: ${s.topic} (${s.node_count} nodes, ${s.created_at})`)
+          .join("\n");
+
+        return {
+          content: [{ type: "text", text: `Past sessions:\n${message}` }],
+          details: { sessions },
+        };
+      } catch (error: any) {
+        return {
+          content: [{ type: "text", text: `Failed to list sessions: ${error.message}` }],
+          details: { error: true },
+        };
+      }
+    },
+  });
+
+  // Import nodes from a past session
+  pi.registerTool({
+    name: "adhd_import_session",
+    label: "Import Session",
+    description: "Import selected nodes from a past session into current graph",
+    promptSnippet: "Use to restore nodes from a previous session",
+    parameters: Type.Object({
+      sessionFile: Type.String({ description: "Path to the session file" }),
+      nodeIds: Type.Array(Type.String(), { description: "Node IDs to import" }),
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      try {
+        const imported = await sessionExporter.importNodes(graph, params.sessionFile, params.nodeIds);
+
+        // Add imported nodes to graph and shelf
+        for (const node of imported) {
+          graph.nodes.set(node.id, node);
+          graph.sleepingNodeIds.push(node.id);
+          shelf.updateKeywordIndex(node);
+        }
+
+        return {
+          content: [{ type: "text", text: `Imported ${imported.length} nodes: ${imported.map(n => n.id).join(", ")}` }],
+          details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
+        };
+      } catch (error: any) {
+        return {
+          content: [{ type: "text", text: `Import failed: ${error.message}` }],
+          details: { error: true },
+        };
+      }
+    },
+  });
+
+  // Delegate a node's task to a sub-agent with file conflict detection
+  pi.registerTool({
+    name: "adhd_delegate_task",
+    label: "Delegate Task",
+    description: "Delegate a node's task to a sub-agent with file conflict detection",
+    promptSnippet: "Use to spawn a sub-agent for a node, with file overlap checking",
+    parameters: Type.Object({
+      nodeId: Type.String({ description: "The node to delegate" }),
+      task: Type.String({ description: "Task description for the sub-agent" }),
+      files: Type.Array(Type.String(), { description: "Files the sub-agent will touch" }),
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const { locked, free } = subagentManager.checkFileOverlap(params.files);
+
+      if (locked.length > 0) {
+        return {
+          content: [{ type: "text", text: `Cannot delegate: files locked by other nodes: ${locked.join(", ")}\nWait for those nodes to finish, or choose different files.` }],
+          details: { conflict: true, lockedFiles: locked },
+        };
+      }
+
+      // Lock files for this node
+      subagentManager.lockFiles(params.nodeId, params.files);
+
+      return {
+        content: [{ type: "text", text: `Ready to delegate node ${params.nodeId}. Files locked: ${params.files.join(", ")}\n\nUse the \`subagent\` tool with:\n- agent: "worker"\n- task: "${params.task}"\n\nWhen done, call \`adhd_unlock_files\` to release the locks.` }],
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize(), lockedFiles: params.files },
+      };
+    },
+  });
+
+  // Release file locks after sub-agent completes
+  pi.registerTool({
+    name: "adhd_unlock_files",
+    label: "Unlock Files",
+    description: "Release file locks after sub-agent completes",
+    promptSnippet: "Use after a sub-agent finishes to release file locks",
+    parameters: Type.Object({
+      nodeId: Type.String({ description: "The node whose files to unlock" }),
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      subagentManager.unlockFiles(params.nodeId);
+
+      return {
+        content: [{ type: "text", text: `Unlocked files for node ${params.nodeId}` }],
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
+      };
+    },
+  });
+
+  // Show current file locks
+  pi.registerTool({
+    name: "adhd_check_locks",
+    label: "Check Locks",
+    description: "Show current file locks",
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const locks = subagentManager.getLockState();
+
+      if (locks.length === 0) {
+        return {
+          content: [{ type: "text", text: "No file locks active" }],
+          details: { locks: [] },
+        };
+      }
+
+      const message = locks
+        .map((l) => `- ${l.path}: locked by ${l.lockedBy} (since ${new Date(l.lockedAt).toISOString()})`)
+        .join("\n");
+
+      return {
+        content: [{ type: "text", text: `Active file locks:\n${message}` }],
+        details: { locks },
       };
     },
   });
