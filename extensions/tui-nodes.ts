@@ -77,3 +77,20 @@ export function formatNodeList(graph: NodeGraph): string {
 
   return output;
 }
+
+// Format a message with its thought tag prefix
+export function formatMessageWithThought(
+  message: string,
+  thoughtId: string | null,
+  thoughtLabel: string | null,
+  graph: NodeGraph
+): string {
+  if (!thoughtId) {
+    return message;
+  }
+
+  const label = thoughtLabel || thoughtId;
+  const prefix = `[${label}]`;
+
+  return `${prefix} ${message}`;
+}

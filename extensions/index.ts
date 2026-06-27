@@ -27,7 +27,7 @@ import { SessionExporter } from "./session-export";
 import { TTLManager } from "./ttl-pruning";
 import { SubagentManager } from "./subagent-manager";
 import { parseNodeTags, stripNodeTags, hasNodeTags } from "./node-tag-parser";
-import { formatNodeStatus, formatNodeList } from "./tui-nodes";
+import { formatNodeStatus, formatNodeList, formatMessageWithThought } from "./tui-nodes";
 
 let graph: NodeGraph = createNodeGraph();
 let shelf: ShelfStorage = new ShelfStorage(graph);
@@ -139,11 +139,16 @@ export default function adhdExtension(pi: ExtensionAPI) {
     const activeTokens = getActiveTokens(graph);
     contextInjection += `Context usage: ~${activeTokens}/${maxContextTokens} tokens\n`;
 
-    contextInjection += `\n\n=== Thought Tree ===\n`;
-    const rootNodes = getActiveNodes(graph).filter(n => !n.parentId);
-    for (const root of rootNodes) {
-      contextInjection += formatThoughtTree(graph, root, 0);
+    // Add current thought to context injection
+    if (currentThoughtId) {
+      const currentThought = graph.nodes.get(currentThoughtId);
+      if (currentThought) {
+        contextInjection += `Current thought: [${currentThought.label}]\n\n`;
+      }
     }
+
+    contextInjection += `=== Thought Tree ===\n`;
+    contextInjection += formatThoughtTree(graph, null, 0);
 
     return {
       systemPrompt: event.systemPrompt + contextInjection,
@@ -220,11 +225,17 @@ export default function adhdExtension(pi: ExtensionAPI) {
       }
     }
 
-    // Strip tags from content before passing to LLM
+    // Strip tags from content, tag with current thought
     const cleanContent = stripNodeTags(content);
+    const taggedContent = formatMessageWithThought(
+      cleanContent,
+      currentThoughtId,
+      graph.nodes.get(currentThoughtId)?.label || null,
+      graph
+    );
 
     return {
-      content: cleanContent,
+      content: taggedContent,
       details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
     };
   });
@@ -234,14 +245,23 @@ export default function adhdExtension(pi: ExtensionAPI) {
 }
 
 // Format thought tree for context injection
-function formatThoughtTree(graph: NodeGraph, node: GraphNode, depth: number): string {
-  const indent = "  ".repeat(depth);
-  let output = `${indent}[${node.id}] ${node.label}\n`;
+function formatThoughtTree(graph: NodeGraph, parentId: string | null, depth: number): string {
+  const children = Array.from(graph.nodes.values())
+    .filter(n => n.parentId === parentId && n.state === "active");
 
-  // Get children
-  const children = getActiveNodes(graph).filter(n => n.parentId === node.id);
+  if (children.length === 0) return "";
+
+  let output = "";
+  const indent = "  ".repeat(depth);
+
   for (const child of children) {
-    output += formatThoughtTree(graph, child, depth + 1);
+    output += `${indent}[${child.label}]`;
+    if (child.id === currentThoughtId) {
+      output += " ← current";
+    }
+    output += "\n";
+
+    output += formatThoughtTree(graph, child.id, depth + 1);
   }
 
   return output;
@@ -650,6 +670,22 @@ function registerTools(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: `Active file locks:\n${message}` }],
         details: { locks },
+      };
+    },
+  });
+
+  // Show thought tree
+  pi.registerTool({
+    name: "adhd_show_thoughts",
+    label: "Show Thought Tree",
+    description: "Display the thought tree structure",
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const tree = formatThoughtTree(graph, null, 0);
+
+      return {
+        content: [{ type: "text", text: `=== Thought Tree ===\n${tree}` }],
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
       };
     },
   });
