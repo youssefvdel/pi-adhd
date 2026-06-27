@@ -14,6 +14,9 @@ import {
   killNode,
   getActiveNodes,
   getSleepingNodes,
+  getInactiveNodes,
+  getActiveTokens,
+  deleteDeadNodes,
   serialize,
   deserialize,
 } from "./node-graph";
@@ -31,6 +34,8 @@ let sessionExporter: SessionExporter = new SessionExporter();
 let ttlManager: TTLManager = new TTLManager();
 let subagentManager: SubagentManager = new SubagentManager();
 let turnCount: number = 0;
+let autoSleepTimeout: number = 10 * 60 * 1000; // 10 minutes
+let maxContextTokens: number = 180000;
 
 export default function adhdExtension(pi: ExtensionAPI) {
   // Reconstruct state from session (last match wins)
@@ -84,12 +89,32 @@ export default function adhdExtension(pi: ExtensionAPI) {
       shelf.sweep(event.prompt);
     }
 
+    // Auto-sleep inactive nodes
+    const inactiveNodes = getInactiveNodes(graph, autoSleepTimeout);
+    for (const node of inactiveNodes) {
+      hibernateNode(graph, node.id);
+      shelf.updateKeywordIndex(node);
+    }
+
+    // Clean up dead nodes
+    const deleted = deleteDeadNodes(graph);
+    if (deleted > 0) {
+      pi.sendMessage({
+        customType: "adhd-cleanup",
+        content: `Cleaned up ${deleted} dead nodes`,
+        display: true,
+      });
+    }
+
     const activeNodes = getActiveNodes(graph);
     const sleepingNodes = getSleepingNodes(graph);
 
     let contextInjection = `\n\n[ADHD Context Engine]\n`;
     contextInjection += `Active nodes: ${activeNodes.length}\n`;
     contextInjection += `Shelf: ${shelf.getShelfIndex()}\n`;
+
+    const activeTokens = getActiveTokens(graph);
+    contextInjection += `Context usage: ~${activeTokens}/${maxContextTokens} tokens\n`;
 
     if (activeNodes.length > 0) {
       contextInjection += `\nActive node details:\n`;
@@ -583,6 +608,24 @@ function registerTools(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: `Unlocked files for node ${params.nodeId}` }],
         details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
+      };
+    },
+  });
+
+  // Set context limit at runtime
+  pi.registerTool({
+    name: "adhd_set_context_limit",
+    label: "Set Context Limit",
+    description: "Change the maximum context window token limit at runtime",
+    parameters: Type.Object({
+      limit: Type.Number({ description: "New maximum token limit (e.g. 180000)" }),
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const old = maxContextTokens;
+      maxContextTokens = params.limit;
+      return {
+        content: [{ type: "text", text: `Context limit changed from ${old} to ${maxContextTokens}` }],
+        details: { oldLimit: old, newLimit: maxContextTokens },
       };
     },
   });

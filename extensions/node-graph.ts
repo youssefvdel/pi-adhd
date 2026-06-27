@@ -141,6 +141,32 @@ export function getSleepingNodes(graph: NodeGraph): GraphNode[] {
     .filter((n): n is GraphNode => n !== undefined);
 }
 
+export function getInactiveNodes(graph: NodeGraph, maxInactiveMs: number): GraphNode[] {
+  const now = Date.now();
+  return getActiveNodes(graph).filter((n) => now - n.lastActive > maxInactiveMs);
+}
+
+export function estimateNodeTokens(node: GraphNode): number {
+  let tokens = 50; // summary baseline
+  if (node.fullContent) {
+    tokens += 1500; // full content estimate
+  }
+  return tokens;
+}
+
+export function getActiveTokens(graph: NodeGraph): number {
+  return getActiveNodes(graph).reduce((sum, n) => sum + estimateNodeTokens(n), 0);
+}
+
+export function deleteDeadNodes(graph: NodeGraph): number {
+  const toDelete = [...graph.deadNodeIds];
+  for (const id of toDelete) {
+    graph.nodes.delete(id);
+  }
+  graph.deadNodeIds = [];
+  return toDelete.length;
+}
+
 export function getShelfIndex(graph: NodeGraph): string {
   const sleeping = getSleepingNodes(graph);
   if (sleeping.length === 0) return "Shelf: empty";
