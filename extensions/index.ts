@@ -3,6 +3,8 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { readFileSync } from "fs";
+import { join } from "path";
 import type { NodeGraph, GraphNode } from "./node-graph";
 import {
   createNodeGraph,
@@ -28,6 +30,14 @@ import { TTLManager } from "./ttl-pruning";
 import { SubagentManager } from "./subagent-manager";
 import { parseNodeTags, stripNodeTags, hasNodeTags } from "./node-tag-parser";
 import { formatNodeStatus, formatNodeList, formatMessageWithThought } from "./tui-nodes";
+
+// Load thought system prompt
+let thoughtSystemPrompt = "";
+try {
+  thoughtSystemPrompt = readFileSync(join(__dirname, "thought-system-prompt.md"), "utf-8");
+} catch {
+  // File not found, use empty string
+}
 
 let graph: NodeGraph = createNodeGraph();
 let shelf: ShelfStorage = new ShelfStorage(graph);
@@ -150,6 +160,9 @@ export default function adhdExtension(pi: ExtensionAPI) {
     contextInjection += `=== Thought Tree ===\n`;
     contextInjection += formatThoughtTree(graph, null, 0);
 
+    // Inject the thought system prompt
+    contextInjection += `\n\n${thoughtSystemPrompt}`;
+
     return {
       systemPrompt: event.systemPrompt + contextInjection,
     };
@@ -198,10 +211,36 @@ export default function adhdExtension(pi: ExtensionAPI) {
     if (event.role !== "assistant") return;
 
     const content = typeof event.content === "string" ? event.content : "";
-    if (!hasNodeTags(content)) return;
-
+    
+    // Parse any <node> tags
     const parsedNodes = parseNodeTags(content);
+    
+    // If no tags found, auto-create a default node for this message
+    if (parsedNodes.length === 0) {
+      // Auto-create a node for this message if none exists
+      if (!currentThoughtId) {
+        const autoId = `auto_${Date.now()}`;
+        const autoThought = addChildThought(graph, "root", autoId, "Auto");
+        autoThought.type = "thought";
+        currentThoughtId = autoId;
+        shelf.updateKeywordIndex(autoThought);
+      }
+      
+      // Tag the content with current thought
+      const taggedContent = formatMessageWithThought(
+        content,
+        currentThoughtId,
+        graph.nodes.get(currentThoughtId)?.label || null,
+        graph
+      );
+      
+      return {
+        content: taggedContent,
+        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
+      };
+    }
 
+    // Process parsed nodes
     for (const parsed of parsedNodes) {
       // Check if node already exists
       if (graph.nodes.has(parsed.id)) {

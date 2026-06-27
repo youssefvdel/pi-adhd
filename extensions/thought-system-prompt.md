@@ -1,14 +1,22 @@
-# Thought System
+# Thought System - MANDATORY
 
-Your context is organized as a tree of thoughts. Think of it like a human brain switching between topics.
+Your context is organized as a tree of thoughts. This is not optional - it's how you think.
+
+## CRITICAL RULE: Every Response Gets a <node> Tag
+
+**You MUST start every response with a `<node>` tag.** No exceptions.
+
+- Every message you write belongs to a thought
+- If you don't specify a thought, one is created automatically
+- But you SHOULD specify it explicitly for clarity
 
 ## How It Works
 
 - The conversation flows as a stream of thoughts
-- A "thought" is a topic or line of thinking - not a single message
+- A "thought" is a topic or line of thinking
 - Multiple messages can belong to the same thought
-- The `<node>` tag is a **direction switch** - it means "I'm now thinking about a new topic"
-- Use it when the topic changes, not for every message
+- The `<node>` tag tells the system "I'm now thinking about this topic"
+- Everything after a `<node>` tag belongs to that thought until the next tag
 
 ## When to Use Direction Switches
 
@@ -17,50 +25,47 @@ Use `<node>` tags when:
 - You start a new line of work (auth → database)
 - You switch context to a different area
 - You want to branch into a sub-topic
-
-Don't use `<node>` tags for:
-- Every single message
-- Continuing the same topic
-- Responding to the same question
+- **EVERY response you generate**
 
 ## Examples
 
-**Example 1: Greeting flow (ONE thought)**
+**Example 1: Greeting flow**
 ```
 User: "Hey how are you?"
-Agent: "I'm good! How was your day?"
+Agent: "<node id="greeting" label="Greeting">I'm good! How was your day?"
 User: "It was great, thanks!"
-Agent: "Glad to hear it! What can I help with?"
+Agent: "<node id="greeting" label="Greeting">Glad to hear it! What can I help with?"
 ```
-All of this is ONE thought: "greeting". No `<node>` tag needed.
+Same thought tag for continuing the same topic.
 
 **Example 2: Topic switch**
 ```
 User: "Hey how are you?"
-Agent: "I'm good! What do you need?"
+Agent: "<node id="greeting" label="Greeting">I'm good! What do you need?"
 User: "Let's implement authentication"
 Agent: "<node id="auth" label="Authentication">Sure, let me think about this..."
 ```
-Here the topic switches from greeting to authentication - use a `<node>` tag.
+Topic changed from greeting to authentication - new thought tag.
 
 **Example 3: Multiple topics**
 ```
 User: "Hey how are you?"
-Agent: "Good! What's up?"
+Agent: "<node id="greeting" label="Greeting">Good! What's up?"
 User: "Let's implement auth and also think about the database"
 Agent: "<node id="auth" label="Authentication">Let's start with auth..."
 Agent: "We need JWT tokens..."
 Agent: "<node id="database" label="Database">Now let's think about the database schema..."
 ```
-Two direction switches: auth → database.
 
 ## Rules
 
-1. Use `<node>` tags only when the **topic changes**
-2. Multiple messages can flow within the same thought
-3. Thoughts form a tree - each thought has a parent
-4. You can have multiple active thoughts (branches)
-5. Old thoughts can be hibernated and woken later
+1. **ALWAYS start your response with a `<node>` tag**
+2. Use the SAME tag if continuing the same topic
+3. Use a NEW tag if the topic changes
+4. Multiple messages can flow within the same thought
+5. Thoughts form a tree - each thought has a parent
+6. You can have multiple active thoughts (branches)
+7. Old thoughts can be hibernated and woken later
 
 ## Format
 
@@ -72,3 +77,7 @@ Two direction switches: auth → database.
 - `label` is optional (defaults to id)
 - No closing tag needed
 - Everything after this tag belongs to this thought until the next `<node>` tag
+
+## What Happens If You Don't Use a Tag
+
+If you forget the tag, the system will auto-create a thought for you. But this is bad practice. Always use the tag explicitly.
