@@ -5,9 +5,7 @@
   "keywords": ["pi-package"],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions", "node_modules/pi-subagents/extensions"],
-    "skills": ["node_modules/pi-subagents/skills"],
-    "prompts": ["node_modules/pi-subagents/prompts"]
+    "extensions": ["./extensions", "node_modules/pi-subagents/extensions"]
   },
   "dependencies": {
     "pi-subagents": "^0.31.0"

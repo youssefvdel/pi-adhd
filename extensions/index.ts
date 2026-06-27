@@ -3,10 +3,11 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import type { NodeGraph } from "./node-graph";
+import type { NodeGraph, GraphNode } from "./node-graph";
 import {
   createNodeGraph,
   createNode,
+  addChildThought,
   wakeNode,
   expandNode,
   collapseNode,
@@ -26,8 +27,7 @@ import { SessionExporter } from "./session-export";
 import { TTLManager } from "./ttl-pruning";
 import { SubagentManager } from "./subagent-manager";
 import { parseNodeTags, stripNodeTags, hasNodeTags } from "./node-tag-parser";
-import { Text } from "@earendil-works/pi-tui";
-import { formatNodeStatus, formatNodeList, getNodeColor } from "./tui-nodes";
+import { formatNodeStatus, formatNodeList } from "./tui-nodes";
 
 let graph: NodeGraph = createNodeGraph();
 let shelf: ShelfStorage = new ShelfStorage(graph);
@@ -38,6 +38,7 @@ let subagentManager: SubagentManager = new SubagentManager();
 let turnCount: number = 0;
 let autoSleepTimeout: number = 10 * 60 * 1000; // 10 minutes
 let maxContextTokens: number = 180000;
+let currentThoughtId: string | null = null;
 
 export default function adhdExtension(pi: ExtensionAPI) {
   // Reconstruct state from session (last match wins)
@@ -108,6 +109,23 @@ export default function adhdExtension(pi: ExtensionAPI) {
       });
     }
 
+    // Auto-create root thought if none exists
+    if (graph.nodes.size === 0) {
+      createNode(graph, "root", "Root", {
+        goal: "",
+        status: "active",
+        keyFiles: [],
+        lastAction: "root thought",
+      }, []);
+      currentThoughtId = "root";
+    }
+
+    // Track current thought (last active thought)
+    if (!currentThoughtId) {
+      const activeThoughts = getActiveNodes(graph);
+      currentThoughtId = activeThoughts.length > 0 ? activeThoughts[activeThoughts.length - 1].id : "root";
+    }
+
     // Update TUI status with node info
     ctx.ui.setStatus("nodes", formatNodeStatus(graph));
 
@@ -121,14 +139,10 @@ export default function adhdExtension(pi: ExtensionAPI) {
     const activeTokens = getActiveTokens(graph);
     contextInjection += `Context usage: ~${activeTokens}/${maxContextTokens} tokens\n`;
 
-    if (activeNodes.length > 0) {
-      contextInjection += `\nActive node details:\n`;
-      for (const node of activeNodes) {
-        const _color = getNodeColor(node.id, graph);
-        contextInjection += `- [${node.id}] ${node.label} (${node.summary.status})\n`;
-        contextInjection += `  Goal: ${node.summary.goal}\n`;
-        contextInjection += `  Key files: ${node.summary.keyFiles.join(", ")}\n`;
-      }
+    contextInjection += `\n\n=== Thought Tree ===\n`;
+    const rootNodes = getActiveNodes(graph).filter(n => !n.parentId);
+    for (const root of rootNodes) {
+      contextInjection += formatThoughtTree(graph, root, 0);
     }
 
     return {
@@ -186,25 +200,23 @@ export default function adhdExtension(pi: ExtensionAPI) {
     for (const parsed of parsedNodes) {
       // Check if node already exists
       if (graph.nodes.has(parsed.id)) {
-        // Node exists, just update lastActive
+        // Node exists, just update lastActive and current thought
         const existing = graph.nodes.get(parsed.id)!;
         existing.lastActive = Date.now();
+        currentThoughtId = parsed.id;
         continue;
       }
 
-      // Create new node
-      const node = createNode(graph, parsed.id, parsed.label, {
-        goal: parsed.goal,
-        status: "active",
-        keyFiles: parsed.files,
-        lastAction: "created via <node> tag",
-      }, parsed.tags);
+      // Create new thought as child of current thought
+      const newThought = addChildThought(graph, currentThoughtId || "root", parsed.id, parsed.label);
+      newThought.type = "direction-switch";
+      currentThoughtId = parsed.id;
 
-      shelf.updateKeywordIndex(node);
+      shelf.updateKeywordIndex(newThought);
 
       // Track files
       for (const file of parsed.files) {
-        staleness.trackFileWrite(node, file);
+        staleness.trackFileWrite(newThought, file);
       }
     }
 
@@ -221,49 +233,21 @@ export default function adhdExtension(pi: ExtensionAPI) {
   registerTools(pi);
 }
 
+// Format thought tree for context injection
+function formatThoughtTree(graph: NodeGraph, node: GraphNode, depth: number): string {
+  const indent = "  ".repeat(depth);
+  let output = `${indent}[${node.id}] ${node.label}\n`;
+
+  // Get children
+  const children = getActiveNodes(graph).filter(n => n.parentId === node.id);
+  for (const child of children) {
+    output += formatThoughtTree(graph, child, depth + 1);
+  }
+
+  return output;
+}
+
 function registerTools(pi: ExtensionAPI) {
-  // Create a new node
-  pi.registerTool({
-    name: "adhd_create_node",
-    label: "Create Node",
-    description: "Create a new thought node in the ADHD context graph",
-    promptSnippet: "Use when starting a new line of work or capturing a new idea",
-    promptGuidelines: [
-      "Create a node when you start working on something new",
-      "Give it a clear, descriptive label",
-      "Include the goal and key files in the summary",
-    ],
-    parameters: Type.Object({
-      id: Type.String({ description: "Unique node ID (e.g., auth_jwt, rate_limiter)" }),
-      label: Type.String({ description: "Short descriptive label" }),
-      goal: Type.String({ description: "What this node is trying to accomplish" }),
-      keyFiles: Type.Array(Type.String(), { description: "Files this node will touch" }),
-      tags: Type.Optional(Type.Array(Type.String(), { description: "Keywords for auto-wake" })),
-    }),
-    renderCall(args, theme, context) {
-      const color = getNodeColor(args.id, graph);
-      return new Text(theme.fg(color, `Creating node: ${args.id}`), 0, 0);
-    },
-    renderResult(result, options, theme, context) {
-      return new Text(theme.fg("success", result.content[0].text), 0, 0);
-    },
-    async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const node = createNode(graph, params.id, params.label, {
-        goal: params.goal,
-        status: "active",
-        keyFiles: params.keyFiles,
-        lastAction: "created",
-      }, params.tags || []);
-
-      shelf.updateKeywordIndex(node);
-
-      return {
-        content: [{ type: "text", text: `Created node: ${params.id} (${params.label})` }],
-        details: { nodeGraph: serialize(graph), shelf: shelf.serialize(), subagentManager: subagentManager.serialize() },
-      };
-    },
-  });
-
   // Wake a sleeping node
   pi.registerTool({
     name: "adhd_wake_node",
@@ -471,7 +455,7 @@ function registerTools(pi: ExtensionAPI) {
       }
 
       if (active.length === 0 && sleeping.length === 0) {
-        message = "No nodes in graph. Use adhd_create_node to create one.";
+        message = "No thoughts in graph. Use <node> tags to start a new thought.";
       }
 
       return {

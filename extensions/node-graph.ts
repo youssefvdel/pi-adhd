@@ -25,6 +25,9 @@ export interface NodeFullContent {
 export interface GraphNode {
   id: string;
   label: string;
+  parentId: string | null; // parent thought ID
+  type: "thought" | "direction-switch";
+  messages: Array<{role: string, content: string}>; // messages in this thought
   state: NodeState;
   summary: NodeSummary;
   fullContent: NodeFullContent | null; // null when sleeping/dead
@@ -56,11 +59,16 @@ export function createNode(
   id: string,
   label: string,
   summary: NodeSummary,
-  tags: string[] = []
+  tags: string[] = [],
+  parentId: string | null = null,
+  type: "thought" | "direction-switch" = "thought"
 ): GraphNode {
   const node: GraphNode = {
     id,
     label,
+    parentId,
+    type,
+    messages: [],
     state: "active",
     summary,
     fullContent: null,
@@ -72,6 +80,18 @@ export function createNode(
   };
   graph.nodes.set(id, node);
   graph.activeNodeIds.push(id);
+  return node;
+}
+
+export function addChildThought(graph: NodeGraph, parentId: string, id: string, label: string): GraphNode {
+  const node = createNode(graph, id, label, {
+    goal: "",  // ponytail: thoughts don't need goals
+    status: "active",
+    keyFiles: [],
+    lastAction: "thought",
+  }, []);
+  node.parentId = parentId;
+  node.type = "thought";
   return node;
 }
 
@@ -212,6 +232,9 @@ export function deserialize(data: any): NodeGraph {
   for (const nodeData of data.nodes) {
     const node: GraphNode = {
       ...nodeData,
+      parentId: nodeData.parentId ?? null,
+      type: nodeData.type ?? "thought",
+      messages: nodeData.messages ?? [],
       trackedFiles: new Map(nodeData.trackedFiles),
     };
     graph.nodes.set(node.id, node);
