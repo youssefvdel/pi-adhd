@@ -1,7 +1,7 @@
 // File staleness tracking
 // Track only written files. Compare filesystem mod time on wake. Check every wake.
 
-import { GraphNode, TrackedFile } from "./node-graph";
+import type { GraphNode } from "./node-graph";
 import * as fs from "fs";
 
 export class StalenessTracker {

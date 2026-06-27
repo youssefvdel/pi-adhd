@@ -3,9 +3,9 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { NodeGraph } from "./node-graph";
 import {
   createNodeGraph,
-  NodeGraph,
   createNode,
   wakeNode,
   expandNode,
@@ -26,9 +26,8 @@ let staleness: StalenessTracker = new StalenessTracker();
 let turnCount: number = 0;
 
 export default function adhdExtension(pi: ExtensionAPI) {
-  // Reconstruct state on session start
-  pi.on("session_start", async (_event, ctx) => {
-    // Scan session for previous state
+  // Reconstruct state from session (last match wins)
+  function reconstructState(ctx: any) {
     for (const entry of ctx.sessionManager.getBranch()) {
       if (entry.type !== "message") continue;
       const msg = entry.message;
@@ -37,18 +36,21 @@ export default function adhdExtension(pi: ExtensionAPI) {
         if (details?.nodeGraph) {
           graph = deserialize(details.nodeGraph);
           shelf = ShelfStorage.deserialize(graph, details.shelf || {});
-          break;
+          // Don't break - iterate all, last match wins
         }
       }
     }
-  });
+  }
+
+  pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
+  pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
 
   // Inject node graph state into system prompt
   pi.on("before_agent_start", async (event, ctx) => {
     turnCount += 1;
 
     // Check for keyword auto-wake
-    const autoWakeIds = shelf.checkKeywordAutoWake(event.prompt || "");
+    const autoWakeIds = shelf.checkKeywordAutoWake(event.prompt);
     for (const id of autoWakeIds) {
       const node = wakeNode(graph, id);
       if (node) {
@@ -58,7 +60,7 @@ export default function adhdExtension(pi: ExtensionAPI) {
 
     // Periodic sweep
     if (shelf.shouldSweep()) {
-      shelf.sweep(event.prompt || "");
+      shelf.sweep(event.prompt);
     }
 
     const activeNodes = getActiveNodes(graph);

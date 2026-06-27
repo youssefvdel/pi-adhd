@@ -3,7 +3,8 @@
 // Layer 2: Periodic sweep every 5 turns
 // Layer 3: Keyword auto-wake
 
-import { NodeGraph, GraphNode, getSleepingNodes } from "./node-graph";
+import type { NodeGraph, GraphNode } from "./node-graph";
+import { getSleepingNodes, getShelfIndex } from "./node-graph";
 
 export interface ShelfSearchResult {
   nodeId: string;
@@ -161,11 +162,4 @@ export class ShelfStorage {
     );
     return shelf;
   }
-}
-
-function getShelfIndex(graph: NodeGraph): string {
-  const sleeping = getSleepingNodes(graph);
-  if (sleeping.length === 0) return "Shelf: empty";
-  const names = sleeping.map((n) => `${n.id}(${n.label})`).join(", ");
-  return `Shelf: [${names}]`;
 }
